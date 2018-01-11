@@ -148,6 +148,11 @@ typedef BOOL(^BYUnzipFinishedDeleteFile)(BOOL success);
 @property (nonatomic, assign) NSInteger maxRetries;
 
 /**
+ 当下载完成后，空闲磁盘最小值。默认50*1024*1024。
+ */
+@property (nonatomic, assign) long long minRemainFreeSpace;
+
+/**
  当手动取消下载任务时是否移除观察者，默认是YES，即移除。
  */
 @property (nonatomic, assign) BOOL removeObserversWhenCancel;

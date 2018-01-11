@@ -8,6 +8,7 @@
 
 #import "BYDownloadTask.h"
 #import "SSZipArchive.h"
+#import <sys/mount.h>
 
 /// 开始下载通知
  NSString *const BYDownloadStartNotification = @"BYDownloadStartNotification";
@@ -126,6 +127,11 @@
  */
 @property (nonatomic, assign) BOOL cleaned;
 
+/**
+ 磁盘空间不足。YES-不足，NO-足够的空间
+ */
+@property (nonatomic, assign) BOOL noEnoughSpace;
+
 @end
 
 @implementation BYDownloadTask
@@ -141,6 +147,7 @@
         _taskQueue = dispatch_queue_create("BY_DOWNLOAD_TASK_QUEUE", NULL);
         _createTaskQueue = dispatch_queue_create("BY_DOWNLOAD_TASK_CREATE_QUEUE", NULL);
         _removeObserversWhenCancel = YES;
+        _minRemainFreeSpace = 50*1024*1024;
         //生成默认identifier
         if (!identifier || ![identifier by_deleteAllSpaceAndNewline]) {
             if (links && links.count > 0) {
@@ -163,6 +170,7 @@
         _taskQueue = dispatch_queue_create("BY_DOWNLOAD_TASK_QUEUE", NULL);
         _createTaskQueue = dispatch_queue_create("BY_DOWNLOAD_TASK_CREATE_QUEUE", NULL);
         _removeObserversWhenCancel = YES;
+        _minRemainFreeSpace = 50*1024*1024;
         if (!link) {
             _downloadLinks = @[];
         }else{
@@ -457,6 +465,12 @@
         [self handleFinishBlock:tmpError];
         return;
     }
+    if (self.noEnoughSpace) {
+        //取消下载
+        NSError *tmpError = [NSError errorWithDomain:NSCocoaErrorDomain code:NSURLErrorCancelled userInfo:@{NSLocalizedDescriptionKey:@"空间不足"}];
+        [self handleFinishBlock:tmpError];
+        return;
+    }
     if (self.downloadLinks.count == 1 && self.maxRetries > 0 && self.retryCount <self.maxRetries && self.state != BYDownloadTaskStateCanceling) {
         //重试
         self.retryCount ++;
@@ -517,6 +531,7 @@
         if (!weakSelf.manualCancel || (weakSelf.manualCancel && weakSelf.removeObserversWhenCancel)) {
             [weakSelf clear];
         }
+        weakSelf.noEnoughSpace = NO;
         weakSelf.manualCancel = NO;
     });
 }
@@ -639,6 +654,12 @@
 //    NSInteger contentLength = [tempResponse.allHeaderFields[@"Content-Length"] integerValue];
     long long expectedContentLength = response.expectedContentLength;
     self.totalLength = expectedContentLength + self.downloadedLength;
+    self.noEnoughSpace = expectedContentLength >= ([self freeDiskSpaceByte] - self.minRemainFreeSpace);
+    if (self.noEnoughSpace) {
+        //当手机剩余空间不足时，下载失败
+        completionHandler(NSURLSessionResponseCancel);
+        return;
+    }
     //接收这个请求，允许接收服务器的数据
     completionHandler(NSURLSessionResponseAllow);
 }
@@ -744,6 +765,16 @@
 - (NSString *)tempFilePath
 {
     return [self tempFilePathWithLink:self.currentLink];
+}
+
+//手机剩余空间获取
+- (long long) freeDiskSpaceByte{
+    struct statfs buf;
+    long long freespace = -1;
+    if(statfs("/var", &buf) >= 0){
+        freespace = (long long)(buf.f_bsize * buf.f_bfree);
+    }
+    return freespace;
 }
 
 @end
