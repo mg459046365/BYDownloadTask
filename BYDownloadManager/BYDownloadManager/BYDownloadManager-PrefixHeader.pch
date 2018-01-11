@@ -1,0 +1,21 @@
+//
+//  BYDownloadManager-PrefixHeader.pch
+//  BYDownloadManager
+//
+//  Created by Beryter on 2018/1/8.
+//  Copyright © 2018年 Beryter. All rights reserved.
+//
+
+#ifndef BYDownloadManager_PrefixHeader_pch
+#define BYDownloadManager_PrefixHeader_pch
+
+// Include any system framework and library headers here that should be included in all compilation units.
+// You will also need to set the Prefix Header build setting of one or more of your targets to reference this file.
+#ifdef __OBJC__
+
+#import "BYDownloadManager.h"
+#import "NSString+BYString.h"
+
+#endif
+
+#endif /* BYDownloadManager_PrefixHeader_pch */
