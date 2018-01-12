@@ -122,6 +122,11 @@ typedef BOOL(^BYUnzipFinishedDeleteFile)(BOOL success);
 @property (nonatomic, readonly) NSArray *downloadLinks;
 
 /**
+ server是否支持etag。默认不支持，使用Last-Modified校验。当erver支持etag时，优先使用etag。
+ */
+@property (nonatomic, assign) BOOL etagEnable;
+
+/**
  下载进程当前状态
  */
 @property (nonatomic, readonly) BYDownloadTaskState state;

@@ -62,6 +62,8 @@
                            //        @"https://sessionpackage.dailyyoga.com.cn/session/package/com.dailyyoga.bbreathing_42.apk",
                            //        @"http://shouji.360tpcdn.com/161103/e462684be41f04dc69fdf067e345575c/com.dailyyoga.bbreathing_42.apk",
                            ];
+        
+        array = @[@"http://iosconfigfile.oss-cn-hangzhou.aliyuncs.com/%E6%B5%8B%E8%AF%95%E6%96%87%E4%BB%B6.zip"];
         NSString *targetPath = [self.dirPath stringByAppendingPathComponent:@"test.zip"];
         self.task = [[BYDownloadTask alloc] initIdentifier:nil links:array targetPath:targetPath];
         __weak typeof(self) weakSelf = self;

@@ -314,7 +314,7 @@
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSFileManager *fmg = [[NSFileManager alloc] init];
         for (NSString *link in weakSelf.downloadLinks) {
-            NSString *tempFilePath = [weakSelf tempFilePathWithLink:link];
+            NSString *tempFilePath = [weakSelf tempFilePathDirWithLink:link];
             [fmg removeItemAtPath:tempFilePath error:nil];
         }
     });
@@ -404,7 +404,7 @@
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         for (NSString *link in weakSelf.downloadLinks) {
             //删除缓存文件
-            NSString *tempPath = [weakSelf tempFilePathWithLink:link];
+            NSString *tempPath = [weakSelf tempFilePathDirWithLink:link];
             [fmg removeItemAtPath:tempPath error:NULL];
         }
     });
@@ -605,21 +605,30 @@
     }
     NSString *tempFilePath = [self tempFilePathWithLink:link];
     NSUInteger downloadedLength = [self tempFileLength:tempFilePath];
-    NSFileManager *fmg = [[NSFileManager alloc] init];
-    if (![fmg fileExistsAtPath:tempFilePath]) {
-        // 创建缓存文件
-        BOOL success = [fmg createFileAtPath:tempFilePath contents:nil attributes:nil];
-        if (!success) {
-            NSError *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileNoSuchFileError userInfo:@{NSLocalizedDescriptionKey:@"temp文件创建失败"}];
-            return error;
-        }
-    }
+    
     // 创建请求
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:link]];
+    
     // 设置请求头
-    // Range : bytes=xxx-xxx
-    NSString *range = [NSString stringWithFormat:@"bytes=%zd-", downloadedLength];
-    [request setValue:range forHTTPHeaderField:@"Range"];
+   
+    if (downloadedLength > 0) {
+        // Range : bytes=xxx-xxx
+        NSString *range = [NSString stringWithFormat:@"bytes=%zd-", downloadedLength];
+        [request setValue:range forHTTPHeaderField:@"Range"];
+        
+        NSString *etag = [self etagValueWithLink:link];
+        if (self.etagEnable && etag) {
+            // Etag : bytes=xxx-xxx
+            [request setValue:etag forHTTPHeaderField:@"If-Range"];
+        }else{
+            // If-Modified-Since
+            NSString *modified = [self modifiedValueWithLink:link];
+            if (modified) {
+                [request setValue:modified forHTTPHeaderField:@"If-Modified-Since"];
+            }
+        }
+    }
+    
     // 创建一个Data任务
     NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request];
     self.totalLength = 0;
@@ -647,23 +656,51 @@
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler
 {
     NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse*)response;
-    if (![httpResponse isKindOfClass:[NSHTTPURLResponse class]]) {
-        return;
-    }
-//    获取服务器这次请求返回数据的总长度
-//    NSInteger contentLength = [tempResponse.allHeaderFields[@"Content-Length"] integerValue];
+    NSLog(@"打印httpResponse，看一下etag，和last-modified并比较:%@",httpResponse);
+    long long expectedContentLength = response.expectedContentLength;
+    NSString *etag = [httpResponse.allHeaderFields valueForKey:@"Etag"];
+    NSString *modified = [httpResponse.allHeaderFields valueForKey:@"Last-Modified"];
+    NSString *contentRange = [httpResponse.allHeaderFields valueForKey:@"Content-Range"];
+    
+    NSString *tempFileDir = [self tempFileDir];
+    NSString *tempFilePath = [self tempFilePath];
+    NSString *etagPath = [self etagFilePath];
+    NSString *modifiedPath = [self modifiedFilePath];
+    
+    NSString *cacheEtag = [self etagValue];
+    NSString *cacheModified = [self modifiedValue];
+    
     if (httpResponse.statusCode == 206) {
         NSLog(@"说明是断点续传");
+        long long fileOffset = 0;
+        long long totalContentLength = response.expectedContentLength + self.downloadedLength;
+        if ([contentRange hasPrefix:@"bytes"]) {
+            NSArray *bytes = [contentRange componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@" -/"]];
+            if ([bytes count] == 4) {
+                fileOffset = [bytes[1] longLongValue];
+                totalContentLength = [bytes[3] longLongValue];
+            }
+        }
+        self.totalLength = totalContentLength;
+        long long offsetContentLenght = MAX(fileOffset, 0);
+        if ((self.downloadedLength != offsetContentLenght) && offsetContentLenght > 0) {
+            self.downloadedLength = offsetContentLenght;
+            [self.fileHandle truncateFileAtOffset:offsetContentLenght];
+        }
     }else if(httpResponse.statusCode == 200){
         NSLog(@"说明不是断点续传需要重新下载");
-    }else{
-//        NSLog(@"链接地址错误");
-//        NSString *ss = [NSHTTPURLResponse localizedStringForStatusCode:httpResponse.statusCode];
-//        NSLog(@"错误码=%@,错误信息=%@",@(httpResponse.statusCode),ss);
+        self.totalLength = expectedContentLength + self.downloadedLength;
+        NSFileManager *fmg = [[NSFileManager alloc] init];
+        [fmg removeItemAtPath:tempFileDir error:NULL];
+        [fmg createDirectoryAtPath:tempFileDir withIntermediateDirectories:YES attributes:nil error:NULL];
+        [fmg createFileAtPath:tempFilePath contents:nil attributes:nil];
+        [fmg createFileAtPath:etagPath contents:nil attributes:nil];
+        [fmg createFileAtPath:modifiedPath contents:nil attributes:nil];
+        [etag writeToFile:etagPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        [modified writeToFile:modifiedPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
-    long long expectedContentLength = response.expectedContentLength;
+    self.fileHandle = [NSFileHandle fileHandleForWritingAtPath:tempFilePath];
     NSLog(@"文件的长度= %@",@(expectedContentLength));
-    self.totalLength = expectedContentLength + self.downloadedLength;
     self.noEnoughSpace = expectedContentLength >= ([self freeDiskSpaceByte] - self.minRemainFreeSpace);
     if (self.noEnoughSpace) {
         //当手机剩余空间不足时，下载失败
@@ -683,6 +720,7 @@
     //下载进度
     self.downloadedLength += data.length;
     CGFloat currentProgress = self.downloadedLength * 1.00 / self.totalLength;
+    NSLog(@"测试现下载进度=%@",@(currentProgress));
     [self handleProgressBlock:currentProgress];
 }
 
@@ -754,6 +792,28 @@
     return _unzipMapTable;
 }
 
+- (NSString *)modifiedValueWithLink:(NSString *)link
+{
+    if (![link by_deleteAllSpaceAndNewline]) {
+        return nil;
+    }
+    NSString *md5 = [link by_md5String];
+    NSString *tempPath = [[[BYDownloadManager manager].cacheDir stringByAppendingPathComponent:md5] stringByAppendingPathComponent:@"modified"];
+    NSString *etag = [NSString stringWithContentsOfFile:tempPath encoding:NSUTF8StringEncoding error:NULL];
+    return etag;
+}
+
+- (NSString *)etagValueWithLink:(NSString *)link
+{
+    if (![link by_deleteAllSpaceAndNewline]) {
+        return nil;
+    }
+    NSString *md5 = [link by_md5String];
+    NSString *tempPath = [[[BYDownloadManager manager].cacheDir stringByAppendingPathComponent:md5] stringByAppendingPathComponent:@"etag"];
+    NSString *etag = [NSString stringWithContentsOfFile:tempPath encoding:NSUTF8StringEncoding error:NULL];
+    return etag;
+}
+
 
 - (NSUInteger)tempFileLength:(NSString *)path
 {
@@ -770,6 +830,50 @@
 }
 
 /**
+ 单个下载文件缓存目录，包含下载temp文件和etag文件
+
+ @param link 下载链接
+ @return 返回下载文件缓存目录
+ */
+- (NSString *)tempFilePathDirWithLink:(NSString *)link
+{
+    if (![link by_deleteAllSpaceAndNewline]) {
+        return nil;
+    }
+    NSString *md5 = [link by_md5String];
+    NSString *tempDirPath = [[BYDownloadManager manager].cacheDir stringByAppendingPathComponent:md5];
+    return tempDirPath;
+}
+
+/**
+ 下载文件缓存路径
+ 
+ @return 下载文件缓存路径
+ */
+- (NSString *)modifiedFilePathWithLink:(NSString *)link
+{
+    if (![link by_deleteAllSpaceAndNewline]) {
+        return nil;
+    }
+    NSString *md5 = [link by_md5String];
+    NSString *tempPath = [[[BYDownloadManager manager].cacheDir stringByAppendingPathComponent:md5] stringByAppendingPathComponent:@"modified"];
+    return tempPath;
+}
+/**
+ 下载文件缓存路径
+ 
+ @return 下载文件缓存路径
+ */
+- (NSString *)etagFilePathWithLink:(NSString *)link
+{
+    if (![link by_deleteAllSpaceAndNewline]) {
+        return nil;
+    }
+    NSString *md5 = [link by_md5String];
+    NSString *tempPath = [[[BYDownloadManager manager].cacheDir stringByAppendingPathComponent:md5] stringByAppendingPathComponent:@"etag"];
+    return tempPath;
+}
+/**
  下载文件缓存路径
 
  @return 下载文件缓存路径
@@ -780,8 +884,33 @@
         return nil;
     }
     NSString *md5 = [link by_md5String];
-    NSString *tempPath = [[BYDownloadManager manager].cacheDir stringByAppendingPathComponent:md5];
+    NSString *tempPath = [[[BYDownloadManager manager].cacheDir stringByAppendingPathComponent:md5] stringByAppendingPathComponent:md5];
     return tempPath;
+}
+
+- (NSString *)modifiedValue
+{
+    return [NSString stringWithContentsOfFile:[self modifiedFilePath] encoding:NSUTF8StringEncoding error:nil];
+}
+
+- (NSString *)etagValue
+{
+    return [NSString stringWithContentsOfFile:[self etagFilePath] encoding:NSUTF8StringEncoding error:nil];
+}
+
+- (NSString *)modifiedFilePath
+{
+    return [self modifiedFilePathWithLink:self.currentLink];
+}
+
+- (NSString *)etagFilePath
+{
+    return [self etagFilePathWithLink:self.currentLink];
+}
+
+- (NSString *)tempFileDir
+{
+    return [self tempFilePathDirWithLink:self.currentLink];
 }
 
 - (NSString *)tempFilePath
