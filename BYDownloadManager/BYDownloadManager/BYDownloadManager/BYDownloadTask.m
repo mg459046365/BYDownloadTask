@@ -650,9 +650,19 @@
     if (![httpResponse isKindOfClass:[NSHTTPURLResponse class]]) {
         return;
     }
-    //获取服务器这次请求返回数据的总长度
+//    获取服务器这次请求返回数据的总长度
 //    NSInteger contentLength = [tempResponse.allHeaderFields[@"Content-Length"] integerValue];
+    if (httpResponse.statusCode == 206) {
+        NSLog(@"说明是断点续传");
+    }else if(httpResponse.statusCode == 200){
+        NSLog(@"说明不是断点续传需要重新下载");
+    }else{
+//        NSLog(@"链接地址错误");
+//        NSString *ss = [NSHTTPURLResponse localizedStringForStatusCode:httpResponse.statusCode];
+//        NSLog(@"错误码=%@,错误信息=%@",@(httpResponse.statusCode),ss);
+    }
     long long expectedContentLength = response.expectedContentLength;
+    NSLog(@"文件的长度= %@",@(expectedContentLength));
     self.totalLength = expectedContentLength + self.downloadedLength;
     self.noEnoughSpace = expectedContentLength >= ([self freeDiskSpaceByte] - self.minRemainFreeSpace);
     if (self.noEnoughSpace) {
@@ -679,6 +689,18 @@
 //请求完毕
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error
 {
+    NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse*)task.response;
+    if (httpResponse.statusCode == 206) {
+        NSLog(@"说明是断点续传");
+    }else if(httpResponse.statusCode == 200){
+        NSLog(@"说明不是断点续传需要重新下载");
+    }else{
+        //如果请求返回404(404表示客户端可以与服务器通信，但服务器找不到请求内容），则请求成功，只是服务器没有找到请求内容，此时 error为nil。
+        if (!error) {
+            error = [NSError errorWithDomain:NSURLErrorDomain code:httpResponse.statusCode userInfo:@{NSLocalizedDescriptionKey:[NSHTTPURLResponse localizedStringForStatusCode:httpResponse.statusCode]}];
+        }
+    }
+    NSLog(@"完成回调=%@",error);
     if (error) {
         [self downloadFailure:error];
         return;
